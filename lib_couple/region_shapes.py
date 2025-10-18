@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence, Optional
 
 
 class ShapeType(str, Enum):
@@ -91,7 +91,12 @@ class RegionShape:
         sharp, whereas 0.0 applies the full feather radius.
     weight:
         Final scalar multiplier applied after rasterisation.  Values should
-        stay within [0, ∞); the compositor will clamp results to [0, 1].
+        stay within [0, inf); the compositor will clamp results to [0, 1].
+    feather_edges:
+        Optional per-side feather overrides stored as a mapping with the
+        directional keys ``top``, ``right``, ``bottom``, and ``left``.  When
+        provided, the specified sides use these values instead of the uniform
+        ``feather`` amount.
     """
 
     shape_type: ShapeType
@@ -101,10 +106,11 @@ class RegionShape:
     feather: float = 0.0
     hardness: float = 1.0
     weight: float = 1.0
+    feather_edges: Optional[Dict[str, float]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialise the region into JSON friendly primitives."""
-        return {
+        payload = {
             "shape_type": self.shape_type.value,
             "parameters": self.parameters,
             "z_order": self.z_order,
@@ -113,6 +119,9 @@ class RegionShape:
             "hardness": self.hardness,
             "weight": self.weight,
         }
+        if self.feather_edges:
+            payload["feather_edges"] = self.feather_edges
+        return payload
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RegionShape":
@@ -123,6 +132,9 @@ class RegionShape:
         shape_type = ShapeType(data["shape_type"])
         parameters = dict(data.get("parameters", {}))
         blend_mode = BlendMode(data.get("blend_mode", BlendMode.NORMAL.value))
+        feather_edges = data.get("feather_edges")
+        if feather_edges is not None:
+            feather_edges = dict(feather_edges)
 
         instance = cls(
             shape_type=shape_type,
@@ -132,6 +144,7 @@ class RegionShape:
             feather=float(data.get("feather", 0.0)),
             hardness=float(data.get("hardness", 1.0)),
             weight=float(data.get("weight", 1.0)),
+            feather_edges=feather_edges,
         )
         instance.validate()
         return instance
@@ -148,6 +161,15 @@ class RegionShape:
 
         if self.weight < 0.0:
             raise ValueError("weight must be non-negative")
+
+        if self.feather_edges is not None:
+            allowed = {"top", "right", "bottom", "left"}
+            cleaned: Dict[str, float] = {}
+            for edge, value in self.feather_edges.items():
+                if edge not in allowed:
+                    raise ValueError(f"Unsupported feather edge '{edge}'")
+                cleaned[edge] = _ensure_normalised(float(value), f"feather_edges.{edge}")
+            self.feather_edges = cleaned
 
         if self.shape_type is ShapeType.RECTANGLE:
             self._validate_rectangle()

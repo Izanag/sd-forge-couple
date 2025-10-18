@@ -73,10 +73,28 @@ def on_entry(data: str) -> list[list]:
         return gr.skip()
 
     try:
-        return loads(data)
+        parsed = loads(data)
     except JSONDecodeError:
         logger.error("Something went wrong while parsing advanced mapping...")
         return DEFAULT_MAPPING
+
+    if not isinstance(parsed, list):
+        return DEFAULT_MAPPING
+
+    if parsed and isinstance(parsed[0], dict):
+        mappings: list[list] = []
+        for entry in parsed:
+            if isinstance(entry, dict):
+                mapping = entry.get("mapping") or entry.get("values")
+                if isinstance(mapping, list):
+                    mappings.append(mapping)
+                    continue
+            if isinstance(entry, list):
+                mappings.append(entry)
+        if mappings:
+            return mappings
+
+    return parsed
 
 
 def on_pull(data: dict) -> str:

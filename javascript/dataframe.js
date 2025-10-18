@@ -123,12 +123,30 @@ class ForgeCoupleDataframe {
         }
     }
 
-    /** @param {number[][]} vals */
+    /** @param {Array} vals */
     onPaste(vals) {
+        const entries = Array.isArray(vals) ? vals : [];
+        const normalised = entries
+            .map((entry) => {
+                if (Array.isArray(entry))
+                    return entry;
+                if (entry && typeof entry === "object") {
+                    if (Array.isArray(entry.mapping))
+                        return entry.mapping;
+                    if (Array.isArray(entry.values))
+                        return entry.values;
+                }
+                return null;
+            })
+            .filter((entry) => Array.isArray(entry) && entry.length >= ForgeCoupleDataframe.#columns - 1);
+
+        if (!normalised.length)
+            return;
+
         while (this.#body.querySelector("tr"))
             this.#body.deleteRow(0);
 
-        const count = vals.length;
+        const count = normalised.length;
 
         for (let r = 0; r < count; r++) {
             const tr = this.#body.insertRow();
@@ -138,7 +156,12 @@ class ForgeCoupleDataframe {
                 const prompt = (c === ForgeCoupleDataframe.#columns - 1);
 
                 td.contentEditable = true;
-                td.textContent = prompt ? "" : Number(vals[r][c]).toFixed(2);
+                if (prompt)
+                    td.textContent = "";
+                else {
+                    const value = Number(normalised[r][c] ?? 0);
+                    td.textContent = Number.isFinite(value) ? value.toFixed(2) : "0.00";
+                }
 
                 td.addEventListener("keydown", (e) => {
                     if (e.key == 'Enter') {

@@ -218,6 +218,43 @@
     border-radius: 0.5em;
 }
 
+.fc_shape_feather_edges {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.25em;
+    margin-top: 0.25em;
+}
+
+.fc_shape_feather_edge {
+    width: 100%;
+}
+
+.fc_masks.fc_pending_shape::before {
+    content: "Select a mask layer to apply the pending shape.";
+    display: block;
+    margin: 0 0 0.5em 0;
+    color: var(--button-primary-border-color);
+    font-size: 0.85em;
+    font-style: italic;
+}
+
+.fc_prop_feather_edges {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.5em;
+    margin-top: 0.5em;
+}
+
+.fc_prop_feather_edges input[type="range"] {
+    width: 100%;
+}
+
+.fc_shape_properties .fc_prop_slider {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25em;
+}
+
 .fc_msk h2 {
     margin-top: 1em !important;
 }
@@ -230,4 +267,67 @@
 
 .fc_msk .fc_msk_uploads .gradio-image div.image-container {
     margin: auto;
+}
+
+.fc_shape_tools {
+    display: flex;
+    gap: 0.5em;
+    justify-content: center;
+    margin: 1em 0;
+}
+
+.fc_shape_tools button {
+    min-width: 4em;
+    padding: 0.5em 1em;
+    border-radius: 0.5em;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.fc_shape_tools button.active {
+    background: var(--button-primary-background-fill);
+    border: 2px solid var(--button-primary-border-color);
+}
+
+.fc_canvas_features {
+    display: flex;
+    gap: 1em;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 1em 0;
+}
+
+.fc_shape_properties {
+    margin: 1em 0;
+}
+
+.fc_coord_inputs {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.5em;
+    margin: 1em 0;
+}
+
+.fc_coord_inputs input {
+    text-align: center;
+    padding: 0.25em;
+    border-radius: 0.25em;
+}
+
+.fc_canvas_overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 200;
+}
+
+.fc_grid_line {
+    stroke: rgba(255, 255, 255, 0.1);
+    stroke-width: 1;
+}
+
+.fc_smart_guide {
+    stroke: rgba(0, 255, 255, 0.8);
+    stroke-width: 2;
 }

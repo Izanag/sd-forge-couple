@@ -97,10 +97,18 @@ class ShapeRenderer:
         self, mask_image: Image.Image, shape: RegionShape, width: int, height: int
     ) -> Image.Image:
         """Apply feathering / hardness falloff using a Gaussian blur."""
-        if shape.feather <= 0.0 or shape.hardness >= 1.0:
+        edge_feather = 0.0
+        if shape.feather_edges:
+            try:
+                edge_feather = max(float(value) for value in shape.feather_edges.values())
+            except (TypeError, ValueError):
+                edge_feather = 0.0
+
+        uniform_feather = max(float(shape.feather), edge_feather)
+        if uniform_feather <= 0.0 or shape.hardness >= 1.0:
             return mask_image
 
-        radius_norm = shape.feather * min(width, height)
+        radius_norm = uniform_feather * min(width, height)
         hardness = _clamp(shape.hardness, 0.0, 1.0)
         effective = radius_norm * (1.0 - hardness) * self.supersample_factor
         if effective <= 0.0:

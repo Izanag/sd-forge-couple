@@ -1,3 +1,4 @@
+import json
 import gradio as gr
 import numpy as np
 from PIL import Image
@@ -12,6 +13,8 @@ try:
 except ImportError:
     pass
 
+BLEND_MODE_VALUES = [mode.value for mode in BlendMode]
+
 
 class CoupleMaskData:
     def __init__(self, is_img2img: bool):
@@ -19,7 +22,7 @@ class CoupleMaskData:
         self.masks: list[Image.Image] = []
         self.weights: list[float] = []
         self.opposite: CoupleMaskData
-        self.shapes: list[RegionShape] = []
+        self.shapes: list[RegionShape | None] = []
         self.use_shapes: bool = False
         self._shape_renderer = ShapeRenderer()
         self._shape_resolution: tuple[int, int] | None = None
@@ -87,12 +90,18 @@ class CoupleMaskData:
                     except ValueError:
                         continue
                     self.shapes.append(shape)
-                self.weights = [shape.weight for shape in self.shapes]
-
+                self.weights = []
+                for shape in self.shapes:
+                    if isinstance(shape, RegionShape):
+                        self.weights.append(shape.weight)
+                    else:
+                        self.weights.append(1.0)
             if not self.shapes:
                 return None
 
-            return [shape.to_dict() for shape in self.shapes]
+            return [
+                shape.to_dict() for shape in self.shapes if isinstance(shape, RegionShape)
+            ]
 
         count = len(self.masks)
         if count == 0:
@@ -205,6 +214,103 @@ class CoupleMaskData:
             )
         )
 
+        gr.HTML(
+            """
+            <div class="fc_shape_tools">
+                <button type="button" class="round-btn" data-tool="RECTANGLE">Rectangle</button>
+                <button type="button" class="round-btn" data-tool="ELLIPSE">Ellipse</button>
+                <button type="button" class="round-btn" data-tool="POLYGON">Polygon</button>
+                <button type="button" class="round-btn" data-tool="BEZIER">Bézier</button>
+            </div>
+            """
+        )
+
+        gr.HTML(
+            """
+            <div class="fc_canvas_features">
+                <label>
+                    <input type="checkbox" class="fc_snap_grid">
+                    Snap to Grid
+                </label>
+                <label>
+                    Grid Size
+                    <input type="number" class="fc_grid_size" min="0.01" step="0.01" value="0.10">
+                </label>
+                <label>
+                    <input type="checkbox" class="fc_smart_guides">
+                    Smart Guides
+                </label>
+                <label>
+                    <input type="checkbox" class="fc_aspect_lock">
+                    Lock Aspect
+                </label>
+                <label>
+                    Aspect Ratio
+                    <input type="text" class="fc_aspect_ratio" value="1.00">
+                </label>
+            </div>
+            """
+        )
+
+        blend_modes_json = json.dumps(BLEND_MODE_VALUES)
+        blend_options_html = "\n".join(
+            f'                        <option value="{mode}">{mode}</option>'
+            for mode in BLEND_MODE_VALUES
+        )
+        gr.HTML(
+            f"""
+            <div class="fc_shape_properties" data-blend-modes='{blend_modes_json}'>
+                <label>
+                    Blend Mode
+                    <select class="fc_prop_blend">
+{blend_options_html}
+                    </select>
+                </label>
+                <label class="fc_prop_slider">
+                    Edge Feather
+                    <input type="range" min="0" max="1" step="0.01" value="0" class="fc_prop_feather">
+                </label>
+                <label class="fc_prop_slider">
+                    Edge Hardness
+                    <input type="range" min="0" max="1" step="0.01" value="1" class="fc_prop_hardness">
+                </label>
+                <label>
+                    Layer Order
+                    <input type="number" step="1" value="0" class="fc_prop_z">
+                </label>
+                <div class="fc_prop_feather_edges">
+                    <label>
+                        Feather Top
+                        <input type="range" min="0" max="1" step="0.01" value="0" class="fc_prop_feather_edge fc_prop_feather_edge_top">
+                    </label>
+                    <label>
+                        Feather Right
+                        <input type="range" min="0" max="1" step="0.01" value="0" class="fc_prop_feather_edge fc_prop_feather_edge_right">
+                    </label>
+                    <label>
+                        Feather Bottom
+                        <input type="range" min="0" max="1" step="0.01" value="0" class="fc_prop_feather_edge fc_prop_feather_edge_bottom">
+                    </label>
+                    <label>
+                        Feather Left
+                        <input type="range" min="0" max="1" step="0.01" value="0" class="fc_prop_feather_edge fc_prop_feather_edge_left">
+                    </label>
+                </div>
+            </div>
+            """
+        )
+
+        gr.HTML(
+            """
+            <div class="fc_coord_inputs">
+                <label>X <input type="number" step="0.01" min="0" max="1" value="0.00"></label>
+                <label>Y <input type="number" step="0.01" min="0" max="1" value="0.00"></label>
+                <label>W <input type="number" step="0.01" min="0.01" max="1" value="0.10"></label>
+                <label>H <input type="number" step="0.01" min="0.01" max="1" value="0.10"></label>
+            </div>
+            """
+        )
+
         with gr.Row(elem_classes="fc_msk_io"):
             msk_btn_save = gr.Button(
                 "Save Mask", interactive=True, elem_classes="round-btn"
@@ -223,6 +329,17 @@ class CoupleMaskData:
         gr.HTML('<h2 align="center"><ins>Mask Layers</ins></h2>')
 
         gr.HTML('<div class="fc_masks"></div>')
+
+        shape_metadata_field = gr.Textbox(
+            visible=False,
+            elem_classes="fc_shape_metadata",
+            show_label=False,
+        )
+        coords_field = gr.Textbox(
+            visible=False,
+            elem_classes="fc_active_shape_coords",
+            show_label=False,
+        )
 
         gr.HTML('<h2 align="center"><ins>Mask Preview</ins></h2>')
 
@@ -285,6 +402,16 @@ class CoupleMaskData:
             msk_canvas.change(
                 fn=None, **js(f'() => {{ ForgeCouple.hideButtons("{self.mode}"); }}')
             )
+        shape_metadata_field.change(
+            self._write_shape_metadata,
+            inputs=[shape_metadata_field],
+            outputs=[],
+        )
+        coords_field.change(
+            self._update_shape_coords,
+            inputs=[coords_field],
+            outputs=[],
+        )
 
         msk_btn_empty.click(
             fn=self._create_empty,
@@ -395,6 +522,8 @@ class CoupleMaskData:
                 msk_gallery,
                 msk_btn_reset,
                 weights_field,
+                shape_metadata_field,
+                coords_field,
                 upload_background,
                 upload_mask,
             )
@@ -512,6 +641,8 @@ class CoupleMaskData:
             bg = Image.new("RGBA", res, "black")
 
             for i, shape in enumerate(self.shapes):
+                if not isinstance(shape, RegionShape):
+                    continue
                 mask_image = self._shape_renderer.render_shape(shape, *res)
                 alpha_array = (np.asarray(mask_image, dtype=np.uint8) * 144) // 255
                 alpha = Image.fromarray(alpha_array.astype(np.uint8))
@@ -552,6 +683,7 @@ class CoupleMaskData:
             self.masks = [
                 self._shape_renderer.render_shape(shape, w, h).convert("L")
                 for shape in self.shapes
+                if isinstance(shape, RegionShape)
             ]
         else:
             self.masks = [mask.resize((w, h)) for mask in self.masks]
@@ -699,6 +831,116 @@ class CoupleMaskData:
             gr.update(interactive=False),
         ]
 
+    def _write_shape_metadata(self, metadata: str):
+        """Receive JSON shape metadata from the front-end."""
+        if metadata is None:
+            return
+
+        metadata = metadata.strip()
+        if not metadata:
+            self.shapes = []
+            self.use_shapes = False
+            return
+
+        try:
+            entries = json.loads(metadata)
+        except json.JSONDecodeError:
+            return
+
+        if not isinstance(entries, list):
+            return
+
+        parsed: list[RegionShape | None] = []
+        for entry in entries:
+            if not entry:
+                parsed.append(None)
+                continue
+            try:
+                shape = RegionShape.from_dict(entry)
+            except (ValueError, KeyError):
+                parsed.append(None)
+            else:
+                parsed.append(shape)
+
+        self.shapes = parsed
+        self.use_shapes = any(isinstance(shape, RegionShape) for shape in parsed)
+
+        if self.use_shapes:
+            new_weights: list[float] = []
+            for index, shape in enumerate(parsed):
+                if isinstance(shape, RegionShape):
+                    new_weights.append(float(shape.weight))
+                else:
+                    existing = self.weights[index] if index < len(self.weights) else 1.0
+                    new_weights.append(existing)
+            self.weights = new_weights
+
+    def _update_shape_coords(self, coords: str):
+        """Update the currently selected shape based on coordinate input."""
+        if not coords or self.selected_index < 0 or self.selected_index >= len(self.shapes):
+            return
+
+        shape = self.shapes[self.selected_index]
+        if not isinstance(shape, RegionShape):
+            return
+
+        try:
+            data = json.loads(coords)
+        except json.JSONDecodeError:
+            return
+
+        if not isinstance(data, dict):
+            return
+
+        x = self._clamp01(float(data.get("x", 0.0)))
+        y = self._clamp01(float(data.get("y", 0.0)))
+        width = self._clamp01(float(data.get("w", 0.0)))
+        height = self._clamp01(float(data.get("h", 0.0)))
+
+        new_bounds = {
+            "x1": x,
+            "y1": y,
+            "x2": self._clamp01(x + width),
+            "y2": self._clamp01(y + height),
+        }
+
+        if shape.shape_type is ShapeType.RECTANGLE:
+            shape.parameters["x1"] = new_bounds["x1"]
+            shape.parameters["y1"] = new_bounds["y1"]
+            shape.parameters["x2"] = new_bounds["x2"]
+            shape.parameters["y2"] = new_bounds["y2"]
+        elif shape.shape_type is ShapeType.ELLIPSE:
+            shape.parameters["cx"] = (new_bounds["x1"] + new_bounds["x2"]) / 2
+            shape.parameters["cy"] = (new_bounds["y1"] + new_bounds["y2"]) / 2
+            shape.parameters["rx"] = self._clamp01(max((new_bounds["x2"] - new_bounds["x1"]) / 2, 0))
+            shape.parameters["ry"] = self._clamp01(max((new_bounds["y2"] - new_bounds["y1"]) / 2, 0))
+        elif shape.shape_type in (ShapeType.POLYGON, ShapeType.BEZIER):
+            original_bounds = self._shape_bounds(shape)
+            if original_bounds is None:
+                return
+
+            if shape.shape_type is ShapeType.POLYGON:
+                points = shape.parameters.get("points", [])
+                shape.parameters["points"] = self._transform_points(points, original_bounds, new_bounds)
+            else:
+                control_points = shape.parameters.get("control_points", [])
+                shape.parameters["control_points"] = self._transform_points(
+                    control_points,
+                    original_bounds,
+                    new_bounds,
+                )
+        else:
+            return
+
+        try:
+            shape.validate()
+        except ValueError:
+            return
+
+        self.shapes[self.selected_index] = shape
+        if self.selected_index < len(self.weights):
+            self.weights[self.selected_index] = float(shape.weight)
+
     def _write_weights(self, weights: str):
         """Cache the mask weights"""
         if not weights.strip():
@@ -707,6 +949,131 @@ class CoupleMaskData:
             self.weights = [float(v) for v in weights.split(",")]
 
         if self.use_shapes:
-            for index, shape in enumerate(self.shapes):
-                if index < len(self.weights):
-                    shape.weight = float(self.weights[index])
+            weight_index = 0
+            for shape in self.shapes:
+                if not isinstance(shape, RegionShape):
+                    continue
+                if weight_index < len(self.weights):
+                    shape.weight = float(self.weights[weight_index])
+                weight_index += 1
+
+    @staticmethod
+    def _clamp01(value: float) -> float:
+        return float(min(max(value, 0.0), 1.0))
+
+    @staticmethod
+    def _transform_points(points, original: dict[str, float], new: dict[str, float]):
+        if not isinstance(points, list):
+            return []
+        old_width = max(original["x2"] - original["x1"], 1e-6)
+        old_height = max(original["y2"] - original["y1"], 1e-6)
+        new_width = max(new["x2"] - new["x1"], 1e-6)
+        new_height = max(new["y2"] - new["y1"], 1e-6)
+
+        transformed = []
+        for entry in points:
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                continue
+            px, py = float(entry[0]), float(entry[1])
+            rel_x = 0.5 if old_width <= 1e-6 else (px - original["x1"]) / old_width
+            rel_y = 0.5 if old_height <= 1e-6 else (py - original["y1"]) / old_height
+            nx = new["x1"] + rel_x * new_width
+            ny = new["y1"] + rel_y * new_height
+            transformed.append([
+                CoupleMaskData._clamp01(nx),
+                CoupleMaskData._clamp01(ny),
+            ])
+        return transformed
+
+    @staticmethod
+    def _shape_bounds(shape: RegionShape) -> dict[str, float] | None:
+        params = shape.parameters
+        if shape.shape_type is ShapeType.RECTANGLE:
+            return {
+                "x1": CoupleMaskData._clamp01(float(params.get("x1", 0.0))),
+                "y1": CoupleMaskData._clamp01(float(params.get("y1", 0.0))),
+                "x2": CoupleMaskData._clamp01(float(params.get("x2", 0.0))),
+                "y2": CoupleMaskData._clamp01(float(params.get("y2", 0.0))),
+            }
+        if shape.shape_type is ShapeType.ELLIPSE:
+            cx = CoupleMaskData._clamp01(float(params.get("cx", 0.0)))
+            cy = CoupleMaskData._clamp01(float(params.get("cy", 0.0)))
+            rx = float(params.get("rx", 0.0))
+            ry = float(params.get("ry", 0.0))
+            return {
+                "x1": CoupleMaskData._clamp01(cx - rx),
+                "x2": CoupleMaskData._clamp01(cx + rx),
+                "y1": CoupleMaskData._clamp01(cy - ry),
+                "y2": CoupleMaskData._clamp01(cy + ry),
+            }
+        if shape.shape_type is ShapeType.POLYGON:
+            points = params.get("points", [])
+            xs = [CoupleMaskData._clamp01(float(pt[0])) for pt in points if isinstance(pt, (list, tuple)) and len(pt) == 2]
+            ys = [CoupleMaskData._clamp01(float(pt[1])) for pt in points if isinstance(pt, (list, tuple)) and len(pt) == 2]
+            if not xs or not ys:
+                return None
+            return {
+                "x1": min(xs),
+                "x2": max(xs),
+                "y1": min(ys),
+                "y2": max(ys),
+            }
+        if shape.shape_type is ShapeType.BEZIER:
+            control_points = params.get("control_points", [])
+            return CoupleMaskData._bezier_bounds(control_points)
+        return None
+
+    @staticmethod
+    def _bezier_bounds(control_points, samples: int = 32) -> dict[str, float] | None:
+        if not isinstance(control_points, list) or len(control_points) < 4:
+            return None
+
+        coords: list[tuple[float, float]] = []
+        for entry in control_points:
+            if not isinstance(entry, (list, tuple)) or len(entry) != 2:
+                continue
+            coords.append((float(entry[0]), float(entry[1])))
+
+        if len(coords) < 4:
+            return None
+
+        segment_count = (len(coords) - 1) // 3
+        if segment_count <= 0:
+            return None
+
+        min_x, max_x = 1.0, 0.0
+        min_y, max_y = 1.0, 0.0
+
+        for idx in range(segment_count):
+            p0, p1, p2, p3 = coords[idx * 3 : idx * 3 + 4]
+            for j, t in enumerate(np.linspace(0.0, 1.0, samples, endpoint=True)):
+                if idx > 0 and j == 0:
+                    continue
+                omt = 1.0 - t
+                omt2 = omt * omt
+                t2 = t * t
+                x = (
+                    omt2 * omt * p0[0]
+                    + 3 * omt2 * t * p1[0]
+                    + 3 * omt * t2 * p2[0]
+                    + t2 * t * p3[0]
+                )
+                y = (
+                    omt2 * omt * p0[1]
+                    + 3 * omt2 * t * p1[1]
+                    + 3 * omt * t2 * p2[1]
+                    + t2 * t * p3[1]
+                )
+                clamped_x = CoupleMaskData._clamp01(x)
+                clamped_y = CoupleMaskData._clamp01(y)
+                min_x = min(min_x, clamped_x)
+                max_x = max(max_x, clamped_x)
+                min_y = min(min_y, clamped_y)
+                max_y = max(max_y, clamped_y)
+
+        return {
+            "x1": min_x,
+            "x2": max_x,
+            "y1": min_y,
+            "y2": max_y,
+        }
