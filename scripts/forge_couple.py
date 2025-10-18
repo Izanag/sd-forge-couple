@@ -284,6 +284,7 @@ class ForgeCouple(scripts.Script):
         # ===== Init =====
 
         # ===== Tiles =====
+        precomposited_masks = False
         match mode:
             case "Basic":
                 fc_args = basic_mapping(
@@ -302,6 +303,18 @@ class ForgeCouple(scripts.Script):
             case "Mask":
                 mapping: list[dict] = self.get_mask() or mapping
 
+                shape_based = bool(mapping) and isinstance(mapping[0], dict) and (
+                    "shape_type" in mapping[0]
+                    or ("shapes" in mapping[0] and mapping[0]["shapes"])
+                )
+
+                if shape_based:
+                    precomposited_masks = True
+                    logger.debug(
+                        "Forge Couple: shape-based mask rendering enabled (%d regions)",
+                        len(mapping),
+                    )
+
                 fc_args = mask_mapping(
                     p.sd_model,
                     self.couples,
@@ -311,6 +324,7 @@ class ForgeCouple(scripts.Script):
                     mapping,
                     background,
                     BG_WEIGHT,
+                    use_shapes=shape_based,
                 )
 
             case "Advanced":
@@ -329,6 +343,7 @@ class ForgeCouple(scripts.Script):
             isA1111=isA1111,
             width=WIDTH,
             height=HEIGHT,
+            precomposited_masks=precomposited_masks,
         )
         if patched_unet is None:
             self.invalidate(p)

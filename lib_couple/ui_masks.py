@@ -3,6 +3,8 @@ import numpy as np
 from PIL import Image
 
 from .gr_version import is_gradio_4, js
+from .region_shapes import BlendMode, RegionShape, ShapeType
+from .shape_renderer import ShapeRenderer
 from .ui_funcs import COLORS
 
 try:
@@ -17,29 +19,161 @@ class CoupleMaskData:
         self.masks: list[Image.Image] = []
         self.weights: list[float] = []
         self.opposite: CoupleMaskData
+        self.shapes: list[RegionShape] = []
+        self.use_shapes: bool = False
+        self._shape_renderer = ShapeRenderer()
+        self._shape_resolution: tuple[int, int] | None = None
 
         self.selected_index: int = -1
 
-    def pull_mask(self) -> list[dict]:
+    def pull_mask(self) -> list[Image.Image]:
         """Pull the masks from the opposite tab"""
         if not (masks_data := self.opposite.get_masks()):
             self.weights = []
+            self.shapes = []
+            self.use_shapes = False
             return []
 
+        first_entry = masks_data[0]
+        is_shape_mapping = isinstance(first_entry, dict) and (
+            "shape_type" in first_entry
+            or ("shapes" in first_entry and first_entry["shapes"])
+        )
+
+        if is_shape_mapping:
+            self.use_shapes = True
+            self.shapes = []
+            self.weights = []
+
+            resolution = self._get_shape_canvas_size()
+            rendered: list[Image.Image] = []
+
+            for entry in masks_data:
+                if not isinstance(entry, dict):
+                    continue
+
+                shape_dicts = entry.get("shapes") or [entry]
+                for shape_dict in shape_dicts:
+                    if not isinstance(shape_dict, dict):
+                        continue
+
+                    shape = RegionShape.from_dict(shape_dict)
+                    self.shapes.append(shape)
+                    self.weights.append(shape.weight)
+                    mask_image = self._shape_renderer.render_shape(
+                        shape, *resolution
+                    ).convert("L")
+                    rendered.append(mask_image)
+
+            self._shape_resolution = resolution
+            return rendered
+
+        self.use_shapes = False
+        self.shapes = []
         self.weights = [1.0 for _ in masks_data]
         return [data["mask"] for data in masks_data]
 
     def get_masks(self) -> list[dict]:
         """Return the current masks as well as weights"""
-        count = len(self.masks)
-        assert count == len(self.weights)
+        if self.use_shapes:
+            if not self.shapes and self.masks:
+                self.shapes = []
+                for index, mask in enumerate(self.masks):
+                    weight = (
+                        self.weights[index] if index < len(self.weights) else 1.0
+                    )
+                    try:
+                        shape = self._convert_mask_to_shape(mask, weight, index)
+                    except ValueError:
+                        continue
+                    self.shapes.append(shape)
+                self.weights = [shape.weight for shape in self.shapes]
 
+            if not self.shapes:
+                return None
+
+            return [shape.to_dict() for shape in self.shapes]
+
+        count = len(self.masks)
         if count == 0:
             return None
+
+        if len(self.weights) != count:
+            self.weights = [1.0 for _ in range(count)]
 
         return [
             {"mask": self.masks[i], "weight": self.weights[i]} for i in range(count)
         ]
+
+    def _get_shape_canvas_size(self) -> tuple[int, int]:
+        if self._shape_resolution is not None:
+            return self._shape_resolution
+        if self.masks:
+            return self.masks[0].size
+        opposite = getattr(self, "opposite", None)
+        if opposite and getattr(opposite, "masks", None):
+            if opposite.masks:
+                return opposite.masks[0].size
+        return 512, 512
+
+    def add_shape(self, shape: RegionShape):
+        """Append a new RegionShape definition and keep caches in sync."""
+        shape.validate()
+        self.use_shapes = True
+        self.shapes.append(shape)
+        self.weights.append(shape.weight)
+
+        resolution = self._get_shape_canvas_size()
+        self._shape_resolution = resolution
+        mask_image = self._shape_renderer.render_shape(shape, *resolution).convert("L")
+        self.masks.append(mask_image)
+
+    def _convert_mask_to_shape(
+        self, mask: Image.Image, weight: float, index: int
+    ) -> RegionShape:
+        """Best-effort conversion from a raster mask to a RECTANGLE shape."""
+        bbox = mask.getbbox()
+        if bbox is None:
+            raise ValueError("Cannot convert an empty mask to a RegionShape")
+
+        x1, y1, x2, y2 = bbox
+        width, height = mask.size
+
+        parameters = {
+            "x1": x1 / width,
+            "y1": y1 / height,
+            "x2": x2 / width,
+            "y2": y2 / height,
+        }
+
+        if parameters["x1"] >= parameters["x2"]:
+            if x2 < width:
+                x2 = min(width, x2 + 1)
+            elif x1 > 0:
+                x1 = max(0, x1 - 1)
+            parameters["x1"] = x1 / width
+            parameters["x2"] = min(1.0, x2 / width)
+
+        if parameters["y1"] >= parameters["y2"]:
+            if y2 < height:
+                y2 = min(height, y2 + 1)
+            elif y1 > 0:
+                y1 = max(0, y1 - 1)
+            parameters["y1"] = y1 / height
+            parameters["y2"] = min(1.0, y2 / height)
+
+        shape = RegionShape(
+            shape_type=ShapeType.RECTANGLE,
+            parameters=parameters,
+            z_order=index,
+            blend_mode=BlendMode.NORMAL,
+            feather=0.0,
+            hardness=1.0,
+            weight=float(weight),
+        )
+        shape.validate()
+        self._shape_resolution = mask.size
+        return shape
 
     def mask_ui(self, btn, res, mode) -> list[gr.components.Component]:
         # ===== Components ===== #
@@ -335,11 +469,25 @@ class CoupleMaskData:
                 self.masks[to_id],
                 self.masks[from_id],
             )
+            if max(from_id, to_id) < len(self.weights):
+                self.weights[from_id], self.weights[to_id] = (
+                    self.weights[to_id],
+                    self.weights[from_id],
+                )
+            if self.use_shapes and max(from_id, to_id) < len(self.shapes):
+                self.shapes[from_id], self.shapes[to_id] = (
+                    self.shapes[to_id],
+                    self.shapes[from_id],
+                )
 
         # Delete
         elif "-" in op:
             to_del = int(op.split("-")[1])
             del self.masks[to_del]
+            if to_del < len(self.weights):
+                del self.weights[to_del]
+            if self.use_shapes and to_del < len(self.shapes):
+                del self.shapes[to_del]
 
         # Select
         else:
@@ -355,6 +503,24 @@ class CoupleMaskData:
 
     def _generate_preview(self) -> Image.Image:
         """Create a preview based on cached masks"""
+        if self.use_shapes:
+            if not self.shapes:
+                return None
+
+            res = self._get_shape_canvas_size()
+            self._shape_resolution = res
+            bg = Image.new("RGBA", res, "black")
+
+            for i, shape in enumerate(self.shapes):
+                mask_image = self._shape_renderer.render_shape(shape, *res)
+                alpha_array = (np.asarray(mask_image, dtype=np.uint8) * 144) // 255
+                alpha = Image.fromarray(alpha_array.astype(np.uint8))
+                color = Image.new("RGB", res, COLORS[i % 7])
+                rgba = Image.merge("RGBA", [*color.split(), alpha])
+                bg.paste(rgba, (0, 0), rgba)
+
+            return bg
+
         if not self.masks:
             return None
 
@@ -381,7 +547,15 @@ class CoupleMaskData:
 
         w, h = self._parse_resolution(resolution)
 
-        self.masks = [mask.resize((w, h)) for mask in self.masks]
+        if self.use_shapes and self.shapes:
+            self._shape_resolution = (w, h)
+            self.masks = [
+                self._shape_renderer.render_shape(shape, w, h).convert("L")
+                for shape in self.shapes
+            ]
+        else:
+            self.masks = [mask.resize((w, h)) for mask in self.masks]
+
         preview = self._generate_preview()
 
         return [self.masks, preview, canvas, None]
@@ -390,6 +564,9 @@ class CoupleMaskData:
         """Clear everything"""
         self.masks.clear()
         self.weights.clear()
+        self.shapes.clear()
+        self.use_shapes = False
+        self._shape_resolution = None
         preview = self._generate_preview()
 
         return [
@@ -431,7 +608,25 @@ class CoupleMaskData:
                 gr.update(interactive=False),
             ]
 
-        self.masks[self.selected_index] = img.convert("1")
+        index = self.selected_index
+        processed = img.convert("L" if self.use_shapes else "1")
+        self.masks[index] = processed
+
+        if index >= len(self.weights):
+            self.weights.extend([1.0] * (index - len(self.weights) + 1))
+
+        if self.use_shapes:
+            weight = self.weights[index]
+            try:
+                shape = self._convert_mask_to_shape(processed, weight, index)
+            except ValueError:
+                pass
+            else:
+                if index < len(self.shapes):
+                    self.shapes[index] = shape
+                else:
+                    self.shapes.append(shape)
+
         self.selected_index = -1
 
         preview = self._generate_preview()
@@ -468,7 +663,20 @@ class CoupleMaskData:
                 gr.update(interactive=False),
             ]
 
-        self.masks.append(img.convert("1"))
+        processed = img.convert("L" if self.use_shapes else "1")
+        self.masks.append(processed)
+
+        if self.use_shapes:
+            index = len(self.masks) - 1
+            weight = self.weights[index] if index < len(self.weights) else 1.0
+            if index >= len(self.weights):
+                self.weights.append(weight)
+            try:
+                shape = self._convert_mask_to_shape(processed, weight, index)
+            except ValueError:
+                pass
+            else:
+                self.shapes.append(shape)
 
         preview = self._generate_preview()
         return [
@@ -497,3 +705,8 @@ class CoupleMaskData:
             self.weights = []
         else:
             self.weights = [float(v) for v in weights.split(",")]
+
+        if self.use_shapes:
+            for index, shape in enumerate(self.shapes):
+                if index < len(self.weights):
+                    shape.weight = float(self.weights[index])

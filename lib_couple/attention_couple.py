@@ -15,7 +15,6 @@ from lib_couple.logging import logger
 
 from .attention_masks import get_mask, lcm_for_list
 
-
 class AttentionCouple:
     def __init__(self):
         self.batch_size: int
@@ -33,17 +32,33 @@ class AttentionCouple:
         isA1111: bool,
         width: int,
         height: int,
+        precomposited_masks: bool = False,
     ):
         num_conds = len(kwargs) // 2 + 1
 
         mask = [base_mask] + [kwargs[f"mask_{i}"] for i in range(1, num_conds)]
         mask = torch.stack(mask, dim=0).to(device=device, dtype=dtype)
 
-        if mask.sum(dim=0).min().item() <= 0.0:
-            logger.error("Image must contain weights on all pixels...")
-            return None
-
-        mask = mask / mask.sum(dim=0, keepdim=True)
+        if not precomposited_masks:
+            mask_sum = mask.sum(dim=0, keepdim=True)
+            if mask_sum.min().item() <= 0.0:
+                logger.error("Image must contain weights on all pixels...")
+                return None
+            mask = mask / mask_sum
+        else:
+            if mask.min().item() < 0.0 or mask.max().item() > 1.0:
+                logger.error("Pre-composited masks must stay within [0, 1] range")
+                return None
+            if mask.max().item() == 0.0:
+                logger.error("Pre-composited masks cannot be entirely empty")
+                return None
+            mask_sum = mask.sum(dim=0, keepdim=True)
+            safe = torch.clamp(mask_sum, min=1.0)
+            mask = mask / safe
+            logger.debug(
+                "Using pre-composited mask blending for %d layers",
+                mask.size(0),
+            )
 
         conds = [
             kwargs[f"cond_{i}"][0][0].to(device=device, dtype=dtype)

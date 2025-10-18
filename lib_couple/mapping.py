@@ -1,10 +1,15 @@
 from base64 import b64decode as decode
 from io import BytesIO as bIO
+from typing import Iterable, List
 
 import numpy as np
 import torch
 from modules.prompt_parser import SdConditioning
 from PIL import Image
+
+from .blend_compositor import composite_region_masks
+from .region_shapes import RegionShape
+from .shape_renderer import ShapeRenderer
 
 
 def empty_tensor(h: int, w: int):
@@ -106,6 +111,30 @@ def b64image2tensor(img: str | Image.Image, width: int, height: int) -> torch.Te
     return image
 
 
+def _is_shape_entry(entry: dict) -> bool:
+    return isinstance(entry, dict) and (
+        "shape_type" in entry or "shapes" in entry
+    )
+
+
+def _ensure_shape_list(entry: dict) -> List[RegionShape]:
+    if "mask" in entry:
+        raise ValueError("Cannot mix raster masks and shape definitions in one group")
+
+    if "shapes" in entry:
+        shapes_source = entry["shapes"]
+        if not isinstance(shapes_source, Iterable) or isinstance(
+            shapes_source, (str, bytes)
+        ):
+            raise ValueError("shapes must be an iterable of shape definitions")
+        shape_dicts = list(shapes_source)
+        if not shape_dicts:
+            return []
+        return [RegionShape.from_dict(shape_dict) for shape_dict in shape_dicts]
+
+    return [RegionShape.from_dict(entry)]
+
+
 def mask_mapping(
     sd_model,
     couples: list,
@@ -115,12 +144,50 @@ def mask_mapping(
     mapping: list[dict],
     background: str,
     bg_weight: float,
+    *,
+    use_shapes: bool = False,
 ) -> dict:
+    """
+    Prepare mask tensors for the Couple attention pipeline.
+
+    Parameters
+    ----------
+    mapping:
+        Either legacy raster masks (dicts with ``mask`` & ``weight``) or
+        shape descriptions (dicts containing ``shape_type``).
+    use_shapes:
+        Forces interpretation of the mapping entries as shape definitions.
+        When False, the format is auto-detected.
+    """
     fc_args: dict = {}
 
-    mapping: list[torch.Tensor] = [
-        b64image2tensor(m["mask"], width, height) * float(m["weight"]) for m in mapping
-    ]
+    renderer = ShapeRenderer()
+    tensors: list[torch.Tensor] = []
+    for index, entry in enumerate(mapping):
+        if use_shapes or _is_shape_entry(entry):
+            try:
+                regions = _ensure_shape_list(entry)
+            except Exception as exc:
+                entry_type = type(entry).__name__
+                raise ValueError(
+                    f"Failed to parse shape mapping entry at index {index} "
+                    f"({entry_type}): {exc}"
+                ) from exc
+
+            mask_array = composite_region_masks(regions, width, height, renderer)
+            tensors.append(torch.from_numpy(mask_array.copy()).unsqueeze(0))
+            continue
+
+        if isinstance(entry, dict) and "mask" in entry:
+            weight = float(entry.get("weight", 1.0))
+            tensors.append(b64image2tensor(entry["mask"], width, height) * weight)
+            continue
+
+        entry_type = type(entry).__name__
+        raise ValueError(
+            f"Unsupported mapping entry at index {index}: expected a dict with "
+            f"'mask' data or shape definition, got {entry_type}"
+        )
 
     for layer in range(line_count):
         # ===== Cond =====
@@ -135,18 +202,18 @@ def mask_mapping(
 
         if background == "First Line":
             mask = (
-                mapping[layer - 1]
+                tensors[layer - 1]
                 if layer > 0
                 else torch.ones((height, width)) * bg_weight
             )
         elif background == "Last Line":
             mask = (
-                mapping[layer]
+                tensors[layer]
                 if layer < line_count - 1
                 else torch.ones((height, width)) * bg_weight
             )
         else:
-            mask = mapping[layer]
+            mask = tensors[layer]
 
         fc_args[f"mask_{layer + 1}"] = mask.unsqueeze(0) if mask.dim() == 2 else mask
         # ===== Mask =====
