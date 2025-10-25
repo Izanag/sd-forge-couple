@@ -48,3 +48,17 @@ def lcm_for_list(numbers):
     for number in numbers[1:]:
         current_lcm = lcm(current_lcm, number)
     return current_lcm
+
+
+def capped_lcm(base: int, numbers: list[int], max_multiple: int = 8) -> int:
+    if base <= 0:
+        return 1
+
+    target = base
+    for number in numbers:
+        if number <= 0:
+            continue
+        target = lcm(target, number)
+        if target >= base * max_multiple:
+            return base * max_multiple
+    return target

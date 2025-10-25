@@ -33,7 +33,9 @@ class ForgeCouple(scripts.Script):
 
     def __init__(self):
         self.is_img2img: bool
-        self.couples: list
+        self.couples: list | None = None
+        self.neg_couples: list | None = None
+        self.use_regional_neg: bool = False
         self.get_mask: Callable
         self.is_hr: bool
 
@@ -124,6 +126,9 @@ class ForgeCouple(scripts.Script):
 
     def invalidate(self, p):
         self.valid = False
+        self.couples = None
+        self.neg_couples = None
+        self.use_regional_neg = False
         p.extra_generation_params.update({"forge_couple": "ERROR"})
         if shared.opts.fc_do_interrupt:
             shared.state.interrupt()
@@ -146,6 +151,8 @@ class ForgeCouple(scripts.Script):
         **kwargs,
     ):
         self.couples = None
+        self.neg_couples = None
+        self.use_regional_neg = False
         if not enable:
             return
 
@@ -157,6 +164,11 @@ class ForgeCouple(scripts.Script):
             separator = "\n"
 
         prompts: str = kwargs["prompts"][0]
+        neg_prompt_source = kwargs.get("negative_prompts")
+        if neg_prompt_source and neg_prompt_source[0]:
+            neg_prompts: str = neg_prompt_source[0]
+        else:
+            neg_prompts = getattr(p, "negative_prompt", "")
 
         if common_parser in ("{ }", "< >"):
             prompts = self.parse_common_prompt(
@@ -164,17 +176,57 @@ class ForgeCouple(scripts.Script):
                 common_parser.split(" "),
                 def_in_prompt,
             )
+            neg_prompts = self.parse_common_prompt(
+                neg_prompts,
+                common_parser.split(" "),
+                def_in_prompt,
+            )
             if common_debug:
                 print("")
                 logger.info(f"[Common Prompts Debug]\n{prompts}\n")
+                logger.info(f"[Common Negative Prompts Debug]\n{neg_prompts}\n")
 
         couples: list[str] = [chunk.strip() for chunk in prompts.split(separator)]
+        neg_couples: list[str] = [
+            chunk.strip() for chunk in neg_prompts.split(separator)
+        ]
+
+        if not any(neg_couples) and getattr(p, "negative_prompt", None):
+            neg_couples = [
+                chunk.strip()
+                for chunk in getattr(p, "negative_prompt", "").split(separator)
+            ]
+
+        if len(neg_couples) < len(couples):
+            filler = (
+                neg_couples[-1]
+                if neg_couples
+                else getattr(p, "negative_prompt", "") or ""
+            )
+            filler = filler.strip()
+            neg_couples.extend([filler] * (len(couples) - len(neg_couples)))
+
+        if len(neg_couples) > len(couples):
+            logger.error(
+                f"Positive and negative prompt counts don't match: {len(couples)} vs {len(neg_couples)}"
+            )
+            self.invalidate(p)
+            return
+
+        if len(neg_couples) != len(couples):
+            logger.error(
+                f"Could not align negative prompts with couples: {len(neg_couples)} entries"
+            )
+            self.invalidate(p)
+            return
+
+        self.use_regional_neg = any(chunk.strip() for chunk in neg_couples)
 
         match mode:
             case "Basic":
                 if len(couples) < (3 - int(background == "None")):
                     ratio = f"{len(couples)} / {3 - int(background == 'None')}"
-                    logger.error(f"Not Enough Lines in Prompt... [{ratio}]")
+                    logger.error(f"Not Enough Positive/Negative Lines in Prompt... [{ratio}]")
                     self.invalidate(p)
                     return
 
@@ -189,7 +241,7 @@ class ForgeCouple(scripts.Script):
                 required: int = len(mapping) + int(background != "None")
                 if len(couples) != required:
                     ratio = f"{len(couples)} / {required}"
-                    logger.error(f"Number of Couples and Masks mismatched... [{ratio}]")
+                    logger.error(f"Number of Couples (pos/neg) and Masks mismatched... [{ratio}]")
                     self.invalidate(p)
                     return
 
@@ -206,7 +258,7 @@ class ForgeCouple(scripts.Script):
 
                 if len(couples) != len(mapping):
                     ratio = f"{len(couples)} / {len(mapping)}"
-                    logger.error(f"Number of Couples and Masks mismatched... [{ratio}]")
+                    logger.error(f"Number of Couples (pos/neg) and Masks mismatched... [{ratio}]")
                     self.invalidate(p)
                     return
 
@@ -217,6 +269,8 @@ class ForgeCouple(scripts.Script):
         fc_param["forge_couple_compatibility"] = disable_hr
         fc_param["forge_couple_mode"] = mode
         fc_param["forge_couple_separator"] = separator.replace("\n", "\\n")
+        fc_param["forge_couple_negative_separator"] = separator.replace("\n", "\\n")
+        fc_param["forge_couple_negative_regions"] = True
         if mode == "Basic":
             fc_param["forge_couple_direction"] = direction
         if mode == "Advanced":
@@ -231,6 +285,7 @@ class ForgeCouple(scripts.Script):
         # ===== Infotext =====
 
         self.couples = couples
+        self.neg_couples = neg_couples
         self.valid = True
 
     def process_before_every_sampling(
@@ -247,7 +302,12 @@ class ForgeCouple(scripts.Script):
         *args,
         **kwargs,
     ):
-        if (not enable) or (self.couples is None) or (not self.valid):
+        if (
+            (not enable)
+            or (self.couples is None)
+            or (self.neg_couples is None)
+            or (not self.valid)
+        ):
             return
 
         if self._is_tile():
@@ -271,6 +331,10 @@ class ForgeCouple(scripts.Script):
         NO_BACKGROUND: bool = background == "None"
 
         LINE_COUNT: int = len(self.couples)
+        if len(self.neg_couples) != LINE_COUNT:
+            logger.error("Positive and negative couples are out of sync before sampling.")
+            self.invalidate(p)
+            return
 
         if mode != "Advanced":
             BG_WEIGHT: float = 0.0 if NO_BACKGROUND else max(0.1, background_weight)
@@ -289,6 +353,7 @@ class ForgeCouple(scripts.Script):
                 fc_args = basic_mapping(
                     p.sd_model,
                     self.couples,
+                    self.neg_couples,
                     WIDTH,
                     HEIGHT,
                     LINE_COUNT,
@@ -305,6 +370,7 @@ class ForgeCouple(scripts.Script):
                 fc_args = mask_mapping(
                     p.sd_model,
                     self.couples,
+                    self.neg_couples,
                     WIDTH,
                     HEIGHT,
                     LINE_COUNT,
@@ -315,11 +381,22 @@ class ForgeCouple(scripts.Script):
 
             case "Advanced":
                 fc_args = advanced_mapping(
-                    p.sd_model, self.couples, WIDTH, HEIGHT, mapping
+                    p.sd_model, self.couples, self.neg_couples, WIDTH, HEIGHT, mapping
                 )
         # ===== Tiles =====
 
-        assert len(fc_args.keys()) // 2 == LINE_COUNT
+        if not fc_args:
+            logger.error("Forge Couple mapping produced no conditioning data.")
+            self.invalidate(p)
+            return
+
+        cond_count = len([k for k in fc_args.keys() if k.startswith("cond_")])
+        neg_cond_count = len([k for k in fc_args.keys() if k.startswith("neg_cond_")])
+        mask_count = len([k for k in fc_args.keys() if k.startswith("mask_")])
+        assert (
+            cond_count == neg_cond_count == mask_count == LINE_COUNT
+        ), "Mapping output mismatch between positive, negative, and masks."
+        fc_args["use_regional_neg"] = self.use_regional_neg
 
         base_mask = empty_tensor(HEIGHT, WIDTH)
         patched_unet = self.forgeAttentionCouple.patch_unet(

@@ -6,6 +6,15 @@ import torch
 from modules.prompt_parser import SdConditioning
 from PIL import Image
 
+from lib_couple.logging import logger
+
+def _ensure_neg_couples(neg_couples: list | None, count: int) -> list[str]:
+    if neg_couples is None:
+        return [""] * count
+    if len(neg_couples) < count:
+        neg_couples = list(neg_couples) + [""] * (count - len(neg_couples))
+    return list(neg_couples)
+
 
 def empty_tensor(h: int, w: int):
     return torch.zeros((h, w)).unsqueeze(0)
@@ -14,6 +23,7 @@ def empty_tensor(h: int, w: int):
 def basic_mapping(
     sd_model,
     couples: list,
+    neg_couples: list | None = None,
     width: int,
     height: int,
     line_count: int,
@@ -24,6 +34,7 @@ def basic_mapping(
     bg_weight: float,
 ) -> dict:
     fc_args: dict = {}
+    neg_couples = _ensure_neg_couples(neg_couples, len(couples))
 
     for tile in range(line_count):
         # ===== Cond =====
@@ -31,6 +42,10 @@ def basic_mapping(
         cond = sd_model.get_learned_conditioning(texts)
         pos_cond = [[cond["crossattn"]]] if sd_model.is_sdxl else [[cond]]
         fc_args[f"cond_{tile + 1}"] = pos_cond
+        neg_texts = SdConditioning([neg_couples[tile]], True, width, height, None)
+        neg_cond = sd_model.get_learned_conditioning(neg_texts)
+        neg_cond = [[neg_cond["crossattn"]]] if sd_model.is_sdxl else [[neg_cond]]
+        fc_args[f"neg_cond_{tile + 1}"] = neg_cond
         # ===== Cond =====
 
         # ===== Mask =====
@@ -62,10 +77,27 @@ def basic_mapping(
 
 
 def advanced_mapping(
-    sd_model, couples: list, width: int, height: int, mapping: list
+    sd_model,
+    couples: list,
+    neg_couples: list | None = None,
+    width: int,
+    height: int,
+    mapping: list,
 ) -> dict:
     fc_args: dict = {}
-    assert len(couples) == len(mapping)
+    expected: int = len(mapping)
+    if len(couples) != expected:
+        logger.error(
+            f"Advanced mapping expects {expected} positive couples, got {len(couples)}"
+        )
+        return {}
+
+    neg_couples = _ensure_neg_couples(neg_couples, len(couples))
+    if len(neg_couples) != expected:
+        logger.error(
+            f"Advanced mapping expects {expected} negative couples, got {len(neg_couples)}"
+        )
+        return {}
 
     for tile_index, (x1, x2, y1, y2, w) in enumerate(mapping):
         # ===== Cond =====
@@ -73,6 +105,10 @@ def advanced_mapping(
         cond = sd_model.get_learned_conditioning(texts)
         pos_cond = [[cond["crossattn"]]] if sd_model.is_sdxl else [[cond]]
         fc_args[f"cond_{tile_index + 1}"] = pos_cond
+        neg_texts = SdConditioning([neg_couples[tile_index]], True, width, height, None)
+        neg_cond = sd_model.get_learned_conditioning(neg_texts)
+        neg_cond = [[neg_cond["crossattn"]]] if sd_model.is_sdxl else [[neg_cond]]
+        fc_args[f"neg_cond_{tile_index + 1}"] = neg_cond
         # ===== Cond =====
 
         # ===== Mask =====
@@ -109,6 +145,7 @@ def b64image2tensor(img: str | Image.Image, width: int, height: int) -> torch.Te
 def mask_mapping(
     sd_model,
     couples: list,
+    neg_couples: list | None = None,
     width: int,
     height: int,
     line_count: int,
@@ -117,6 +154,7 @@ def mask_mapping(
     bg_weight: float,
 ) -> dict:
     fc_args: dict = {}
+    neg_couples = _ensure_neg_couples(neg_couples, len(couples))
 
     mapping: list[torch.Tensor] = [
         b64image2tensor(m["mask"], width, height) * float(m["weight"]) for m in mapping
@@ -128,6 +166,10 @@ def mask_mapping(
         cond = sd_model.get_learned_conditioning(texts)
         pos_cond = [[cond["crossattn"]]] if sd_model.is_sdxl else [[cond]]
         fc_args[f"cond_{layer + 1}"] = pos_cond
+        neg_texts = SdConditioning([neg_couples[layer]], True, width, height, None)
+        neg_cond = sd_model.get_learned_conditioning(neg_texts)
+        neg_cond = [[neg_cond["crossattn"]]] if sd_model.is_sdxl else [[neg_cond]]
+        fc_args[f"neg_cond_{layer + 1}"] = neg_cond
         # ===== Cond =====
 
         # ===== Mask =====

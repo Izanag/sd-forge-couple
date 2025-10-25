@@ -5,6 +5,7 @@ https://github.com/laksjdjf/cgem156-ComfyUI/blob/main/scripts/attention_couple/n
 Modified by. Haoming02 to work with Forge
 """
 
+import math
 from functools import wraps
 from typing import Callable
 
@@ -13,7 +14,7 @@ from modules.devices import device, dtype
 
 from lib_couple.logging import logger
 
-from .attention_masks import get_mask, lcm_for_list
+from .attention_masks import capped_lcm, get_mask
 
 
 class AttentionCouple:
@@ -34,7 +35,8 @@ class AttentionCouple:
         width: int,
         height: int,
     ):
-        num_conds = len(kwargs) // 2 + 1
+        num_conds = len([k for k in kwargs.keys() if k.startswith("cond_")]) + 1
+        use_regional_neg = bool(kwargs.get("use_regional_neg", False))
 
         mask = [base_mask] + [kwargs[f"mask_{i}"] for i in range(1, num_conds)]
         mask = torch.stack(mask, dim=0).to(device=device, dtype=dtype)
@@ -50,6 +52,21 @@ class AttentionCouple:
             for i in range(1, num_conds)
         ]
         num_tokens = [cond.shape[1] for cond in conds]
+        neg_conds = []
+        neg_num_tokens = []
+        if use_regional_neg:
+            try:
+                neg_conds = [
+                    kwargs[f"neg_cond_{i}"][0][0].to(device=device, dtype=dtype)
+                    for i in range(1, num_conds)
+                ]
+            except KeyError:
+                use_regional_neg = False
+                neg_conds = []
+            else:
+                neg_num_tokens = [neg_cond.shape[1] for neg_cond in neg_conds]
+                if not any(neg_num_tokens):
+                    use_regional_neg = False
 
         if isA1111:
             self.manual = {
@@ -57,6 +74,31 @@ class AttentionCouple:
                 "cond_or_uncond": [0, 1],
             }
             self.checked = False
+
+        def _repeat_tokens(tensor: torch.Tensor, target_len: int, batch_repeat=None):
+            if target_len <= 0:
+                return tensor
+
+            current_batch = tensor.shape[0]
+            repeat_batch = batch_repeat if batch_repeat is not None else current_batch
+            need_batch_repeat = repeat_batch != current_batch
+
+            seq_len = tensor.shape[1]
+            repeat_tokens = (
+                math.ceil(target_len / seq_len) if seq_len < target_len else 1
+            )
+
+            if need_batch_repeat or repeat_tokens > 1:
+                tensor = tensor.repeat(
+                    repeat_batch if need_batch_repeat else 1,
+                    repeat_tokens,
+                    1,
+                )
+
+            if tensor.shape[1] > target_len:
+                tensor = tensor[:, :target_len, :]
+
+            return tensor
 
         @torch.inference_mode()
         def attn2_patch(q, k, v, extra_options=None):
@@ -74,24 +116,47 @@ class AttentionCouple:
             self.batch_size = q.shape[0] // num_chunks
             q_chunks = q.chunk(num_chunks, dim=0)
             k_chunks = k.chunk(num_chunks, dim=0)
-            lcm_tokens = lcm_for_list(num_tokens + [k.shape[1]])
+            k_tokens = k.shape[1]
+
+            pos_target_len = capped_lcm(k_tokens, num_tokens)
+            if not conds:
+                logger.error("No conditioning tensors available for attention patch.")
+                return q, k, v
             conds_tensor = torch.cat(
                 [
-                    cond.repeat(self.batch_size, lcm_tokens // num_tokens[i], 1)
-                    for i, cond in enumerate(conds)
+                    _repeat_tokens(cond, pos_target_len, self.batch_size)
+                    for cond in conds
                 ],
                 dim=0,
             )
 
+            neg_target_len = pos_target_len
+            neg_conds_tensor = None
+            use_negative_masks = False
+            if use_regional_neg and neg_conds:
+                neg_target_len = capped_lcm(k_tokens, neg_num_tokens)
+                neg_conds_tensor = torch.cat(
+                    [
+                        _repeat_tokens(neg_cond, neg_target_len, self.batch_size)
+                        for neg_cond in neg_conds
+                    ],
+                    dim=0,
+                )
+                use_negative_masks = True
+
             qs, ks = [], []
             for i, cond_or_uncond in enumerate(cond_or_unconds):
-                k_target = k_chunks[i].repeat(1, lcm_tokens // k.shape[1], 1)
-                if cond_or_uncond == 1:  # uncond
-                    qs.append(q_chunks[i])
-                    ks.append(k_target)
-                else:
+                if cond_or_uncond == 1 and use_negative_masks:
+                    neg_k_target = _repeat_tokens(k_chunks[i], neg_target_len)
                     qs.append(q_chunks[i].repeat(num_conds, 1, 1))
-                    ks.append(torch.cat([k_target, conds_tensor], dim=0))
+                    ks.append(torch.cat([neg_k_target, neg_conds_tensor], dim=0))
+                elif cond_or_uncond == 1:
+                    qs.append(q_chunks[i])
+                    ks.append(_repeat_tokens(k_chunks[i], pos_target_len))
+                else:
+                    pos_k_target = _repeat_tokens(k_chunks[i], pos_target_len)
+                    qs.append(q_chunks[i].repeat(num_conds, 1, 1))
+                    ks.append(torch.cat([pos_k_target, conds_tensor], dim=0))
 
             qs = torch.cat(qs, dim=0).to(q)
             ks = torch.cat(ks, dim=0).to(k)
@@ -118,8 +183,17 @@ class AttentionCouple:
             pos = 0
             for cond_or_uncond in cond_or_unconds:
                 if cond_or_uncond == 1:  # uncond
-                    outputs.append(out[pos : pos + self.batch_size])
-                    pos += self.batch_size
+                    if use_regional_neg and neg_conds:
+                        masked_output = (
+                            out[pos : pos + num_conds * self.batch_size]
+                            * mask_downsample
+                        ).view(num_conds, self.batch_size, out.shape[1], out.shape[2])
+                        masked_output = masked_output.sum(dim=0)
+                        outputs.append(masked_output)
+                        pos += num_conds * self.batch_size
+                    else:
+                        outputs.append(out[pos : pos + self.batch_size])
+                        pos += self.batch_size
                 else:
                     masked_output = (
                         out[pos : pos + num_conds * self.batch_size] * mask_downsample
