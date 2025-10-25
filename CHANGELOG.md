@@ -1,3 +1,12 @@
+### v4.0.7 - 2025 Oct.03
+- Add **Weight Scheduler** module with curve interpolation
+
+### v4.0.6 - 2025 Oct.03
+- Add **per-region negative prompt editing** with backend
+
+### v4.0.5 - 2025 Oct.03
+- Add **regional negative prompt** pipeline support
+
 ### v4.0.4 - 2025 Oct.03
 - Fix Mask **dtype**
 
