@@ -23,7 +23,6 @@ def empty_tensor(h: int, w: int):
 def basic_mapping(
     sd_model,
     couples: list,
-    neg_couples: list | None = None,
     width: int,
     height: int,
     line_count: int,
@@ -32,6 +31,7 @@ def basic_mapping(
     tile_size: int,
     tile_weight: float,
     bg_weight: float,
+    neg_couples: list | None = None,
 ) -> dict:
     fc_args: dict = {}
     neg_couples = _ensure_neg_couples(neg_couples, len(couples))
@@ -79,10 +79,10 @@ def basic_mapping(
 def advanced_mapping(
     sd_model,
     couples: list,
-    neg_couples: list | None = None,
     width: int,
     height: int,
     mapping: list,
+    neg_couples: list | None = None,
 ) -> dict:
     fc_args: dict = {}
     expected: int = len(mapping)
@@ -145,13 +145,13 @@ def b64image2tensor(img: str | Image.Image, width: int, height: int) -> torch.Te
 def mask_mapping(
     sd_model,
     couples: list,
-    neg_couples: list | None = None,
     width: int,
     height: int,
     line_count: int,
     mapping: list[dict],
     background: str,
     bg_weight: float,
+    neg_couples: list | None = None,
 ) -> dict:
     fc_args: dict = {}
     neg_couples = _ensure_neg_couples(neg_couples, len(couples))

@@ -7,8 +7,8 @@ class ForgeCoupleDataframe {
 
     static get #columns() { return this.#tableHeader.length; }
 
-    static #tableHeader = ["x1", "x2", "y1", "y2", "w", "prompt"];
-    static #tableWidth = ["6%", "6%", "6%", "6%", "6%", "70%"];
+    static #tableHeader = ["x1", "x2", "y1", "y2", "w", "prompt", "neg_prompt"];
+    static #tableWidth = ["6%", "6%", "6%", "6%", "6%", "35%", "35%"];
 
     static #colors = [0, 30, 60, 120, 240, 280, 320];
     static #color(i) { return `hsl(${ForgeCoupleDataframe.#colors[i % 7]}, 36%, 36%)` }
@@ -16,7 +16,16 @@ class ForgeCoupleDataframe {
     /** "t2i" | "i2i" */
     #mode = undefined;
     #promptField = undefined;
+    #negPromptField = undefined;
     #separatorField = undefined;
+
+    static #columnType(index) {
+        if (index === this.#columns - 2)
+            return "prompt";
+        if (index === this.#columns - 1)
+            return "neg_prompt";
+        return "number";
+    }
 
     get #sep() {
         let sep = this.#separatorField.value.trim();
@@ -30,10 +39,16 @@ class ForgeCoupleDataframe {
     /** @param {Element} div @param {string} mode @param {Element} separator */
     constructor(div, mode, separator) {
         this.#mode = mode;
-        this.#promptField = document.getElementById(`${mode === "t2i" ? "txt" : "img"}2img_prompt`).querySelector("textarea");
+        const promptWrapper = document.getElementById(`${mode === "t2i" ? "txt" : "img"}2img_prompt`);
+        this.#promptField = promptWrapper ? promptWrapper.querySelector("textarea") : undefined;
+        const negPromptWrapper = document.getElementById(`${mode === "t2i" ? "txt" : "img"}2img_neg_prompt`);
+        this.#negPromptField = negPromptWrapper ? negPromptWrapper.querySelector("textarea") : undefined;
         this.#separatorField = separator;
 
-        this.#separatorField.addEventListener("blur", () => { this.syncPrompts(); });
+        this.#separatorField.addEventListener("blur", () => {
+            this.syncPrompts();
+            this.syncNegativePrompts();
+        });
         const table = document.createElement('table');
 
 
@@ -62,10 +77,10 @@ class ForgeCoupleDataframe {
 
             for (let c = 0; c < ForgeCoupleDataframe.#columns; c++) {
                 const td = tr.insertCell();
-                const isPrompt = (c === ForgeCoupleDataframe.#columns - 1);
+                const columnType = ForgeCoupleDataframe.#columnType(c);
 
                 td.contentEditable = true;
-                td.textContent = isPrompt ? "" : Number(ForgeCoupleDataframe.#default_mapping[r][c]).toFixed(2);
+                td.textContent = (columnType === "number") ? Number(ForgeCoupleDataframe.#default_mapping[r][c]).toFixed(2) : "";
 
                 td.addEventListener("keydown", (e) => {
                     if (e.key == 'Enter') {
@@ -74,7 +89,7 @@ class ForgeCoupleDataframe {
                     }
                 });
 
-                td.addEventListener("blur", () => { this.#onSubmit(td, isPrompt); })
+                td.addEventListener("blur", () => { this.#onSubmit(td, columnType); })
                 td.onclick = () => { this.#onSelect(r); }
             }
         }
@@ -91,27 +106,35 @@ class ForgeCoupleDataframe {
         ForgeCouple.onSelect(this.#mode);
     }
 
-    /** @param {Element} cell @param {boolean} isPrompt */
-    #onSubmit(cell, isPrompt) {
-        if (isPrompt) {
+    /** @param {Element} cell @param {"number"|"prompt"|"neg_prompt"} columnType */
+    #onSubmit(cell, columnType) {
+        if (columnType === "prompt" || columnType === "neg_prompt") {
+            const columnIndex = (columnType === "prompt")
+                ? ForgeCoupleDataframe.#columns - 2
+                : ForgeCoupleDataframe.#columns - 1;
+            const targetField = (columnType === "prompt") ? this.#promptField : this.#negPromptField;
+            if (!targetField)
+                return;
+
             const prompts = [];
             const rows = this.#body.querySelectorAll("tr");
             rows.forEach((row) => {
-                const prompt = row.querySelector("td:last-child").textContent.trim();
+                const prompt = row.querySelectorAll("td")[columnIndex].textContent.trim();
                 prompts.push(prompt);
             });
 
-            const oldPrompts = this.#promptField.value.split(this.#sep).map(line => line.trim());
+            const oldPrompts = targetField.value.split(this.#sep).map(line => line.trim());
             const modified = prompts.length;
 
             if (modified >= oldPrompts.length)
-                this.#promptField.value = prompts.join(this.#sep);
+                targetField.value = prompts.join(this.#sep);
             else {
                 const newPrompts = [...prompts, ...(oldPrompts.slice(modified))]
-                this.#promptField.value = newPrompts.join(this.#sep);
+                targetField.value = newPrompts.join(this.#sep);
             }
 
-            updateInput(this.#promptField);
+            updateInput(targetField);
+            return;
         } else {
             let val = this.#clamp01(cell.textContent,
                 Array.from(cell.parentElement.children).indexOf(cell) === 4
@@ -135,10 +158,10 @@ class ForgeCoupleDataframe {
 
             for (let c = 0; c < ForgeCoupleDataframe.#columns; c++) {
                 const td = tr.insertCell();
-                const prompt = (c === ForgeCoupleDataframe.#columns - 1);
+                const columnType = ForgeCoupleDataframe.#columnType(c);
 
                 td.contentEditable = true;
-                td.textContent = prompt ? "" : Number(vals[r][c]).toFixed(2);
+                td.textContent = (columnType === "number") ? Number(vals[r][c]).toFixed(2) : "";
 
                 td.addEventListener("keydown", (e) => {
                     if (e.key == 'Enter') {
@@ -147,7 +170,7 @@ class ForgeCoupleDataframe {
                     }
                 });
 
-                td.addEventListener("blur", () => { this.#onSubmit(td, prompt); })
+                td.addEventListener("blur", () => { this.#onSubmit(td, columnType); })
                 td.onclick = () => { this.#onSelect(r); }
             }
         }
@@ -156,6 +179,7 @@ class ForgeCoupleDataframe {
         ForgeCouple.onSelect(this.#mode);
         ForgeCouple.onEntry(this.#mode);
         this.syncPrompts();
+        this.syncNegativePrompts();
     }
 
     reset() {
@@ -167,10 +191,10 @@ class ForgeCoupleDataframe {
 
             for (let c = 0; c < ForgeCoupleDataframe.#columns; c++) {
                 const td = tr.insertCell();
-                const prompt = (c === ForgeCoupleDataframe.#columns - 1);
+                const columnType = ForgeCoupleDataframe.#columnType(c);
 
                 td.contentEditable = true;
-                td.textContent = prompt ? "" : Number(ForgeCoupleDataframe.#default_mapping[r][c]).toFixed(2);
+                td.textContent = (columnType === "number") ? Number(ForgeCoupleDataframe.#default_mapping[r][c]).toFixed(2) : "";
 
                 td.addEventListener("keydown", (e) => {
                     if (e.key == 'Enter') {
@@ -179,7 +203,7 @@ class ForgeCoupleDataframe {
                     }
                 });
 
-                td.addEventListener("blur", () => { this.#onSubmit(td, prompt); })
+                td.addEventListener("blur", () => { this.#onSubmit(td, columnType); })
                 td.onclick = () => { this.#onSelect(r); }
             }
         }
@@ -188,6 +212,7 @@ class ForgeCoupleDataframe {
         ForgeCouple.onSelect(this.#mode);
         ForgeCouple.onEntry(this.#mode);
         this.syncPrompts();
+        this.syncNegativePrompts();
     }
 
     /** @returns {number[][]} */
@@ -197,14 +222,14 @@ class ForgeCoupleDataframe {
 
         const vals = Array.from(rows, row => {
             return Array.from(row.querySelectorAll("td"))
-                .slice(0, -1).map(cell => parseFloat(cell.textContent));
+                .slice(0, -2).map(cell => parseFloat(cell.textContent));
         });
 
         const tr = this.#body.insertRow();
 
         for (let c = 0; c < ForgeCoupleDataframe.#columns; c++) {
             const td = tr.insertCell();
-            const prompt = (c === ForgeCoupleDataframe.#columns - 1);
+            const columnType = ForgeCoupleDataframe.#columnType(c);
 
             td.contentEditable = true;
             td.textContent = "";
@@ -216,7 +241,7 @@ class ForgeCoupleDataframe {
                 }
             });
 
-            td.addEventListener("blur", () => { this.#onSubmit(td, prompt); })
+            td.addEventListener("blur", () => { this.#onSubmit(td, columnType); })
             td.onclick = () => { this.#onSelect(count); }
         }
 
@@ -238,25 +263,20 @@ class ForgeCoupleDataframe {
 
         for (let r = 0; r < count; r++) {
             const cells = rows[r].querySelectorAll("td");
-            for (let c = 0; c < ForgeCoupleDataframe.#columns - 1; c++)
+            for (let c = 0; c < ForgeCoupleDataframe.#columns - 2; c++)
                 cells[c].textContent = Number(newVals[r][c]).toFixed(2);
         }
 
         if (newline) {
-            const prompts = this.#promptField.value.split(this.#sep).map(line => line.trim());
-            const newPrompts = [
-                ...prompts.slice(0, this.#selection),
-                "",
-                ...prompts.slice(this.#selection)
-            ];
-            this.#promptField.value = newPrompts.join(this.#sep);
-            updateInput(this.#promptField);
+            this.#insertPromptLine(this.#promptField, this.#selection);
+            this.#insertPromptLine(this.#negPromptField, this.#selection);
         }
 
         this.#selection += 1;
         ForgeCouple.onSelect(this.#mode);
         ForgeCouple.onEntry(this.#mode);
         this.syncPrompts();
+        this.syncNegativePrompts();
     }
 
     /** @param {boolean} newline */
@@ -274,24 +294,19 @@ class ForgeCoupleDataframe {
 
         for (let r = 0; r < count; r++) {
             const cells = rows[r].querySelectorAll("td");
-            for (let c = 0; c < ForgeCoupleDataframe.#columns - 1; c++)
+            for (let c = 0; c < ForgeCoupleDataframe.#columns - 2; c++)
                 cells[c].textContent = Number(newVals[r][c]).toFixed(2);
         }
 
         if (newline) {
-            const prompts = this.#promptField.value.split(this.#sep).map(line => line.trim());
-            const newPrompts = [
-                ...prompts.slice(0, this.#selection + 1),
-                "",
-                ...prompts.slice(this.#selection + 1)
-            ];
-            this.#promptField.value = newPrompts.join(this.#sep);
-            updateInput(this.#promptField);
+            this.#insertPromptLine(this.#promptField, this.#selection + 1);
+            this.#insertPromptLine(this.#negPromptField, this.#selection + 1);
         }
 
         ForgeCouple.onSelect(this.#mode);
         ForgeCouple.onEntry(this.#mode);
         this.syncPrompts();
+        this.syncNegativePrompts();
     }
 
     /** @param {boolean} removeText */
@@ -301,7 +316,7 @@ class ForgeCoupleDataframe {
 
         const vals = Array.from(rows, row => {
             return Array.from(row.querySelectorAll("td"))
-                .slice(0, -1).map(cell => parseFloat(cell.textContent));
+                .slice(0, -2).map(cell => parseFloat(cell.textContent));
         });
 
         vals.splice(this.#selection, 1);
@@ -309,15 +324,13 @@ class ForgeCoupleDataframe {
 
         for (let r = 0; r < count - 1; r++) {
             const cells = rows[r].querySelectorAll("td");
-            for (let c = 0; c < ForgeCoupleDataframe.#columns - 1; c++)
+            for (let c = 0; c < ForgeCoupleDataframe.#columns - 2; c++)
                 cells[c].textContent = Number(vals[r][c]).toFixed(2);
         }
 
         if (removeText) {
-            const prompts = this.#promptField.value.split(this.#sep).map(line => line.trim());
-            prompts.splice(this.#selection, 1);
-            this.#promptField.value = prompts.join(this.#sep);
-            updateInput(this.#promptField);
+            this.#removePromptLine(this.#promptField, this.#selection);
+            this.#removePromptLine(this.#negPromptField, this.#selection);
         }
 
         if (this.#selection == count - 1)
@@ -326,6 +339,7 @@ class ForgeCoupleDataframe {
         ForgeCouple.onSelect(this.#mode);
         ForgeCouple.onEntry(this.#mode);
         this.syncPrompts();
+        this.syncNegativePrompts();
     }
 
     /** @returns {[string, Element]} */
@@ -350,16 +364,18 @@ class ForgeCoupleDataframe {
     }
 
     syncPrompts() {
-        const prompt = this.#promptField.value;
+        if (!this.#promptField)
+            return;
 
+        const prompt = this.#promptField.value;
         const prompts = prompt.split(this.#sep).map(line => line.trim());
         const rows = this.#body.querySelectorAll("tr");
+        const columnIndex = ForgeCoupleDataframe.#columns - 2;
 
         const active = document.activeElement;
         rows.forEach((row, i) => {
-            const promptCell = row.querySelector("td:last-child");
+            const promptCell = row.querySelectorAll("td")[columnIndex];
 
-            // Skip editing Cell
             if (promptCell === active)
                 return;
 
@@ -368,6 +384,56 @@ class ForgeCoupleDataframe {
             else
                 promptCell.textContent = "";
         });
+    }
+
+    syncNegativePrompts() {
+        if (!this.#negPromptField)
+            return;
+
+        const negPrompt = this.#negPromptField.value;
+        const prompts = negPrompt.split(this.#sep).map(line => line.trim());
+        const rows = this.#body.querySelectorAll("tr");
+        const columnIndex = ForgeCoupleDataframe.#columns - 1;
+
+        const active = document.activeElement;
+        rows.forEach((row, i) => {
+            const promptCell = row.querySelectorAll("td")[columnIndex];
+
+            if (promptCell === active)
+                return;
+
+            if (i < prompts.length)
+                promptCell.textContent = prompts[i].replace(/\n+/g, ", ").replace(/,+/g, ",");
+            else
+                promptCell.textContent = "";
+        });
+    }
+
+    #insertPromptLine(field, index) {
+        if (!field || index < 0)
+            return;
+
+        const prompts = field.value ? field.value.split(this.#sep).map(line => line.trim()) : [];
+        const newPrompts = [
+            ...prompts.slice(0, index),
+            "",
+            ...prompts.slice(index)
+        ];
+        field.value = newPrompts.join(this.#sep);
+        updateInput(field);
+    }
+
+    #removePromptLine(field, index) {
+        if (!field || index < 0)
+            return;
+
+        const prompts = field.value ? field.value.split(this.#sep).map(line => line.trim()) : [];
+        if (!prompts.length || index >= prompts.length)
+            return;
+
+        prompts.splice(index, 1);
+        field.value = prompts.join(this.#sep);
+        updateInput(field);
     }
 
     /** @param {number} @param {boolean} w @returns {number} */

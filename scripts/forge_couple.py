@@ -353,7 +353,6 @@ class ForgeCouple(scripts.Script):
                 fc_args = basic_mapping(
                     p.sd_model,
                     self.couples,
-                    self.neg_couples,
                     WIDTH,
                     HEIGHT,
                     LINE_COUNT,
@@ -362,6 +361,7 @@ class ForgeCouple(scripts.Script):
                     TILE_SIZE,
                     TILE_WEIGHT,
                     BG_WEIGHT,
+                    neg_couples=self.neg_couples,
                 )
 
             case "Mask":
@@ -370,18 +370,23 @@ class ForgeCouple(scripts.Script):
                 fc_args = mask_mapping(
                     p.sd_model,
                     self.couples,
-                    self.neg_couples,
                     WIDTH,
                     HEIGHT,
                     LINE_COUNT,
                     mapping,
                     background,
                     BG_WEIGHT,
+                    neg_couples=self.neg_couples,
                 )
 
             case "Advanced":
                 fc_args = advanced_mapping(
-                    p.sd_model, self.couples, self.neg_couples, WIDTH, HEIGHT, mapping
+                    p.sd_model,
+                    self.couples,
+                    WIDTH,
+                    HEIGHT,
+                    mapping,
+                    neg_couples=self.neg_couples,
                 )
         # ===== Tiles =====
 

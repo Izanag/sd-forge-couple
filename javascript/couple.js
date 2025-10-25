@@ -125,7 +125,7 @@ class ForgeCouple {
 
         const vals = Array.from(rows, row => {
             return Array.from(row.querySelectorAll("td"))
-                .slice(0, -1).map(cell => parseFloat(cell.textContent));
+                .slice(0, -2).map(cell => parseFloat(cell.textContent));
         });
 
         const json = JSON.stringify(vals);
@@ -189,9 +189,17 @@ class ForgeCouple {
      */
     static onBackgroundChange(mode) {
         this.maskHandler[mode].syncPrompts();
+        this.maskHandler[mode].syncNegativePrompts();
     }
 
     static setup() {
+        const getHiddenTextbox = (id) => {
+            const root = document.getElementById(id);
+            if (!root)
+                return null;
+            return root.querySelector("textarea") || root.querySelector("input");
+        };
+
         ["t2i", "i2i"].forEach((mode) => {
             const ex = document.getElementById(`forge_couple_${mode}`);
             const mapping_btns = ex.querySelector(".fc_mapping_btns");
@@ -201,6 +209,45 @@ class ForgeCouple {
 
             const separator = ex.querySelector(".fc_separator").querySelector("input");
             const promptField = document.getElementById(`${mode === "t2i" ? "txt" : "img"}2img_prompt`).querySelector("textarea");
+            const negPromptWrapper = document.getElementById(`${mode === "t2i" ? "txt" : "img"}2img_neg_prompt`);
+            const negPromptField = negPromptWrapper ? negPromptWrapper.querySelector("textarea") : null;
+            const negSeparatorHidden = getHiddenTextbox(`fc_neg_separator_${mode}`);
+            const regionalNegCheckbox = document.getElementById(`fc_use_regional_neg_${mode}`)?.querySelector("input[type='checkbox']");
+
+            const normalizeSeparator = () => {
+                let val = separator.value.trim();
+                if (!val)
+                    return "\n";
+                return val.replace(/\\n/g, "\n").split("\n").map(c => c.trim()).join("\n");
+            };
+
+            const syncHiddenSeparator = () => {
+                if (!negSeparatorHidden)
+                    return;
+                const newValue = separator.value;
+                if (negSeparatorHidden.value !== newValue) {
+                    negSeparatorHidden.value = newValue;
+                    updateInput(negSeparatorHidden);
+                }
+            };
+
+            const syncRegionalNegCheckbox = () => {
+                if (!regionalNegCheckbox || !negPromptField)
+                    return;
+                const sep = normalizeSeparator();
+                const tokens = negPromptField.value.split(sep).map(chunk => chunk.trim()).filter(chunk => chunk.length > 0);
+                const shouldEnable = tokens.length >= 2;
+                if (regionalNegCheckbox.checked !== shouldEnable) {
+                    regionalNegCheckbox.checked = shouldEnable;
+                    updateInput(regionalNegCheckbox);
+                }
+            };
+
+            separator.addEventListener("input", () => {
+                syncHiddenSeparator();
+                syncRegionalNegCheckbox();
+            });
+            syncHiddenSeparator();
 
             this.dataframe[mode] = new ForgeCoupleDataframe(this.container[mode], mode, separator);
 
@@ -239,6 +286,7 @@ class ForgeCouple {
                 separator,
                 ex.querySelector(".fc_global_effect"),
                 promptField,
+                negPromptField,
                 ex.querySelector(".fc_msk_weights").querySelector("textarea"),
                 ex.querySelector(".fc_msk_op").querySelector("textarea"),
                 ex.querySelector(".fc_msk_op_btn"),
@@ -247,13 +295,28 @@ class ForgeCouple {
 
             this.#registerButtons(ex, mode);
             ForgeCoupleObserver.observe(
-                mode,
+                `${mode}_prompt`,
                 promptField,
                 () => {
                     this.dataframe[mode].syncPrompts();
                     this.maskHandler[mode].syncPrompts();
                 }
             );
+            if (negPromptField) {
+                ForgeCoupleObserver.observe(
+                    `${mode}_neg_prompt`,
+                    negPromptField,
+                    () => {
+                        this.dataframe[mode].syncNegativePrompts();
+                        this.maskHandler[mode].syncNegativePrompts();
+                        syncRegionalNegCheckbox();
+                    }
+                );
+            } else {
+                console.warn(`[ForgeCouple] Negative prompt field missing for ${mode}; regional negatives may be out of sync.`);
+            }
+
+            syncRegionalNegCheckbox();
         });
 
         this.#registerResolutionHandles();

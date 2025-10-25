@@ -12,6 +12,11 @@ except ImportError:
 
 
 class CoupleMaskData:
+    """
+    Manages mask layers for Forge Couple.
+    Each layer tracks a mask image, weight, a positive prompt, and a negative prompt
+    that stay in sync with the main txt2img/img2img prompt textareas.
+    """
     def __init__(self, is_img2img: bool):
         self.mode: str = "i2i" if is_img2img else "t2i"
         self.masks: list[Image.Image] = []

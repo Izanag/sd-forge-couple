@@ -109,7 +109,32 @@ def couple_ui(script, is_img2img: bool, title: str, unpatch: Callable):
                 max_lines=1,
                 placeholder="\\n",
                 elem_classes="fc_separator",
+                elem_id=f"fc_separator_{m}",
+                info="Split both positive and negative prompts into regions with this separator. Use the same separator inside the main negative prompt textbox.",
                 scale=1,
+            )
+
+            neg_separator = gr.Textbox(
+                value="",
+                label="Regional Negative Separator",
+                visible=False,
+                elem_id=f"fc_neg_separator_{m}",
+            )
+            neg_separator.do_not_save_to_config = True
+
+            use_regional_neg = gr.Checkbox(
+                value=False,
+                label="Use Regional Negative Prompts",
+                visible=False,
+                elem_id=f"fc_use_regional_neg_{m}",
+            )
+            use_regional_neg.do_not_save_to_config = True
+
+            separator.change(
+                fn=lambda val: gr.update(value=val),
+                inputs=separator,
+                outputs=neg_separator,
+                show_progress="hidden",
             )
 
         with gr.Group(visible=True, elem_classes="fc_bsc") as basic_settings:

@@ -6,6 +6,7 @@ class ForgeCoupleMaskHandler {
     #separatorField = undefined;
     #background = undefined;
     #promptField = undefined;
+    #negPromptField = undefined;
     #weightField = undefined;
     #operationField = undefined;
     #operationButton = undefined;
@@ -28,23 +29,29 @@ class ForgeCoupleMaskHandler {
      * @param {HTMLInputElement} sep
      * @param {HTMLInputElement} background
      * @param {HTMLTextAreaElement} promptField
+     * @param {HTMLTextAreaElement} negPromptField
+     * @param {HTMLTextAreaElement} weightField
      * @param {HTMLTextAreaElement} op
      * @param {HTMLButtonElement} opButton
      * @param {HTMLButtonElement} loadButton
      */
-    constructor(group, gallery, preview, sep, background, promptField, weightField, op, opButton, loadButton) {
+    constructor(group, gallery, preview, sep, background, promptField, negPromptField, weightField, op, opButton, loadButton) {
         this.#group = group;
         this.#gallery = gallery;
         this.#preview = preview;
         this.#separatorField = sep;
         this.#background = background;
         this.#promptField = promptField;
+        this.#negPromptField = negPromptField;
         this.#weightField = weightField;
         this.#operationField = op;
         this.#operationButton = opButton;
         this.#loadButton = loadButton;
 
-        this.#separatorField.addEventListener("blur", () => { this.syncPrompts(); });
+        this.#separatorField.addEventListener("blur", () => {
+            this.syncPrompts();
+            this.syncNegativePrompts();
+        });
     }
 
     /** @returns {HTMLDivElement[]} */
@@ -94,6 +101,7 @@ class ForgeCoupleMaskHandler {
 
         this.#populateRows(this.#allRows, imgs);
         this.syncPrompts();
+        this.syncNegativePrompts();
         this.parseWeights();
 
         if (!this.#selectionAvailable) {
@@ -116,16 +124,29 @@ class ForgeCoupleMaskHandler {
         img.addEventListener("click", () => { this.#onSelectRow(row); });
 
         const txt = document.createElement("input");
-        txt.setAttribute('style', 'width: 80%;');
+        txt.setAttribute('style', 'width: 100%;');
         txt.setAttribute("type", "text");
+        txt.placeholder = "Positive Prompt";
+        txt.classList.add("fc_mask_pos_prompt");
         row.appendChild(txt);
         row.txt = txt;
 
         txt.value = "";
         txt.addEventListener("blur", () => { this.#onSubmitPrompt(txt); });
 
+        const negTxt = document.createElement("input");
+        negTxt.setAttribute('style', 'width: 100%;');
+        negTxt.setAttribute("type", "text");
+        negTxt.placeholder = "Negative Prompt";
+        negTxt.classList.add("fc_mask_neg_prompt");
+        row.appendChild(negTxt);
+        row.negTxt = negTxt;
+
+        negTxt.value = "";
+        negTxt.addEventListener("blur", () => { this.#onSubmitNegativePrompt(negTxt); });
+
         const weight = document.createElement("input");
-        weight.setAttribute('style', 'width: 10%;');
+        weight.setAttribute('style', 'width: 100%;');
         weight.setAttribute("type", "number");
         weight.title = "Weight";
         row.appendChild(weight);
@@ -206,6 +227,43 @@ class ForgeCoupleMaskHandler {
     }
 
     /** @param {HTMLInputElement} field */
+    #onSubmitNegativePrompt(field) {
+        if (!this.#negPromptField)
+            return;
+
+        const prompts = [];
+        this.#allRows.forEach((row) => {
+            prompts.push(row.negTxt.value);
+        });
+
+        const radio = this.#background.querySelector('div.wrap>label.selected>span');
+        const background = radio.textContent;
+
+        const existingPrompt = this.#negPromptField.value
+            .split(this.#sep).map(line => line.trim());
+
+        if (existingPrompt.length > 0) {
+            if (background == "First Line")
+                prompts.unshift(existingPrompt.shift());
+            else if (background == "Last Line")
+                prompts.push(existingPrompt.pop());
+        }
+
+        const oldLen = existingPrompt.length;
+        const newLen = prompts.length;
+
+        if ((newLen >= oldLen) || (oldLen === 0)) {
+            this.#negPromptField.value = prompts.join(this.#sep);
+            updateInput(this.#negPromptField);
+        }
+        else {
+            const newPrompts = [...prompts, ...(existingPrompt.slice(newLen))];
+            this.#negPromptField.value = newPrompts.join(this.#sep);
+            updateInput(this.#negPromptField);
+        }
+    }
+
+    /** @param {HTMLInputElement} field */
     #onSubmitWeight(field) {
         const w = this.#clamp05(field.value);
         field.value = Number(w).toFixed(2);
@@ -267,6 +325,35 @@ class ForgeCoupleMaskHandler {
             const promptCell = row.txt;
 
             // Skip editing Cell
+            if (promptCell === active)
+                return;
+
+            if (i < prompts.length)
+                promptCell.value = prompts[i].replace(/\n+/g, ", ").replace(/,+/g, ",");
+            else
+                promptCell.value = "";
+        });
+    }
+
+    syncNegativePrompts() {
+        if (!this.#negPromptField)
+            return;
+
+        const prompt = this.#negPromptField.value;
+        let prompts = prompt.split(this.#sep).map(line => line.trim());
+
+        const radio = this.#background.querySelector('div.wrap>label.selected>span');
+        const background = radio.textContent;
+
+        if (background == "First Line")
+            prompts = prompts.slice(1);
+        else if (background == "Last Line")
+            prompts = prompts.slice(0, -1);
+
+        const active = document.activeElement;
+        this.#allRows.forEach((row, i) => {
+            const promptCell = row.negTxt;
+
             if (promptCell === active)
                 return;
 
